@@ -29,10 +29,7 @@ import com.netflix.spinnaker.security.AuthenticatedRequest;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.*;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ScheduledExecutorService;
-import java.util.concurrent.TimeUnit;
-import java.util.concurrent.TimeoutException;
+import java.util.concurrent.*;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -61,6 +58,9 @@ public class PipelineCache implements MonitoredPoller {
   private volatile Instant lastPollTimestamp;
 
   @Nullable private volatile List<Pipeline> pipelines;
+
+  // Pipeline plan cache
+  @Nullable private volatile ConcurrentHashMap<String, Map<String, Object>> pipelinePlanCache;
 
   @Nullable private volatile Map<String, List<Trigger>> triggersByType;
 
@@ -101,6 +101,7 @@ public class PipelineCache implements MonitoredPoller {
     this.running = false;
     this.pipelines = null;
     this.triggersByType = null;
+    this.pipelinePlanCache = new ConcurrentHashMap<>();
   }
 
   @PreDestroy
@@ -130,7 +131,7 @@ public class PipelineCache implements MonitoredPoller {
   }
 
   private Double getDurationSeconds() {
-    return (lastPollTimestamp == null)
+    return lastPollTimestamp == null
         ? -1d
         : (double) Duration.between(lastPollTimestamp, now()).getSeconds();
   }
@@ -162,6 +163,7 @@ public class PipelineCache implements MonitoredPoller {
   }
 
   private Map<String, Object> hydrate(Map<String, Object> rawPipeline) {
+
     Predicate<Map<String, Object>> isV2Pipeline =
         p -> {
           return p.getOrDefault("type", "").equals("templatedPipeline")
@@ -179,6 +181,7 @@ public class PipelineCache implements MonitoredPoller {
         .map(this::convertToPipeline)
         .filter(Objects::nonNull)
         .map(PipelineCache::decorateTriggers)
+        .filter(Objects::nonNull)
         .findFirst();
   }
 
@@ -190,8 +193,7 @@ public class PipelineCache implements MonitoredPoller {
 
   private List<Pipeline> fetchHydratedPipelines() {
     List<Map<String, Object>> rawPipelines = fetchRawPipelines();
-
-    return rawPipelines.stream()
+    return rawPipelines.parallelStream()
         .map(this::process)
         .filter(Optional::isPresent)
         .map(Optional::get)
@@ -240,21 +242,60 @@ public class PipelineCache implements MonitoredPoller {
   }
 
   /**
-   * If the pipeline is a v2 pipeline, plan that pipeline. Returns an empty map if the plan fails,
-   * so that the pipeline is skipped.
+   * Attempt to retrieve the given pipeline from the cache. return null if it doesn't exist
+   *
+   * @param pipeline
+   * @return
+   */
+  private Map<String, Object> retrievePlanFromCache(Map<String, Object> pipeline) {
+    return Stream.of(
+            Objects.requireNonNull(pipelinePlanCache).getOrDefault(pipeline.get("id"), null))
+        .filter(Objects::nonNull)
+        .filter(
+            p ->
+                Long.parseLong(p.get("updateTs").toString())
+                    >= Long.parseLong(pipeline.get("updateTs").toString()))
+        .peek(p -> log.debug("Retrieved pipeline from cache: {}", p.get("id").toString()))
+        .findFirst()
+        .orElse(null);
+  }
+
+  private Map<String, Object> addPlanToCache(Map<String, Object> plan, long updateTs) {
+    plan.put("updateTs", updateTs);
+    log.debug("Adding Pipeline to Cache: {}", plan.get("id"));
+    Objects.requireNonNull(pipelinePlanCache).put(plan.get("id").toString(), plan);
+    return plan;
+  }
+  /**
+   * If the pipeline is a v2 pipeline attempt to retrieve a cached plan otherwise plan that
+   * pipeline. Returns an empty map if the plan fails, so that the pipeline is skipped.
    */
   private Map<String, Object> planPipelineIfNeeded(
       Map<String, Object> pipeline, Predicate<Map<String, Object>> isV2Pipeline) {
-    if (isV2Pipeline.test(pipeline)) {
-      try {
-        return AuthenticatedRequest.allowAnonymous(() -> orca.v2Plan(pipeline));
-      } catch (Exception e) {
-        // Don't fail the entire cache cycle if we fail a plan.
-        log.error("Caught exception while planning templated pipeline: {}", pipeline, e);
-        return Collections.emptyMap();
-      }
-    } else {
-      return pipeline;
+
+    // Get the updateTs from the raw pipeline definition as plans don't include this.
+    long updateTs = Long.parseLong(pipeline.get("updateTs").toString());
+    // Create optional pipeline
+    Optional<Map<String, Object>> pipelineOpt = Optional.of(pipeline);
+    try {
+      return pipelineOpt
+          .filter(Predicate.not(isV2Pipeline))
+          .orElseGet(
+              () ->
+                  pipelineOpt
+                      .map(this::retrievePlanFromCache)
+                      .orElseGet(
+                          () ->
+                              pipelineOpt
+                                  .map(
+                                      p ->
+                                          AuthenticatedRequest.allowAnonymous(() -> orca.v2Plan(p)))
+                                  .map(p -> addPlanToCache(p, updateTs))
+                                  .get()));
+    } catch (Exception e) {
+      // Don't fail the entire cache cycle if we fail a plan.
+      log.error("Caught exception while planning templated pipeline: {}", pipeline, e);
+      return Collections.emptyMap();
     }
   }
 
