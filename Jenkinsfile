@@ -10,7 +10,7 @@ dockerPipeline {
   useSonarPlugin = false
 
   buildCommand = {
-    sh("./gradlew build && ./gradlew install || true")
+    sh("./gradlew build || true && ./gradlew install || true")
   }
 
 
