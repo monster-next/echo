@@ -162,7 +162,7 @@ public class PipelineCache implements MonitoredPoller {
     }
   }
 
-  private Map<String, Object> hydrate(Map<String, Object> rawPipeline) {
+  private Map<String, Object> hydrate(Map<String, Object> rawPipeline, boolean useCache) {
 
     Predicate<Map<String, Object>> isV2Pipeline =
         p -> {
@@ -170,13 +170,13 @@ public class PipelineCache implements MonitoredPoller {
               && p.getOrDefault("schema", "").equals("v2");
         };
 
-    return planPipelineIfNeeded(rawPipeline, isV2Pipeline);
+    return planPipelineIfNeeded(rawPipeline, isV2Pipeline, useCache);
   }
 
   // converts a raw pipeline config from front50 into a processed Pipeline object
-  private Optional<Pipeline> process(Map<String, Object> rawPipeline) {
+  private Optional<Pipeline> process(Map<String, Object> rawPipeline, boolean useCache) {
     return Stream.of(rawPipeline)
-        .map(this::hydrate)
+        .map(p -> hydrate(p, useCache))
         .filter(m -> !m.isEmpty())
         .map(this::convertToPipeline)
         .filter(Objects::nonNull)
@@ -194,7 +194,7 @@ public class PipelineCache implements MonitoredPoller {
   private List<Pipeline> fetchHydratedPipelines() {
     List<Map<String, Object>> rawPipelines = fetchRawPipelines();
     return rawPipelines.parallelStream()
-        .map(this::process)
+        .map(p -> process(p, true))
         .filter(Optional::isPresent)
         .map(Optional::get)
         .collect(Collectors.toList());
@@ -224,7 +224,7 @@ public class PipelineCache implements MonitoredPoller {
   public Pipeline refresh(Pipeline cached) {
     try {
       Map<String, Object> pipeline = front50.getPipeline(cached.getId());
-      Optional<Pipeline> processed = process(pipeline);
+      Optional<Pipeline> processed = process(pipeline, false);
       if (!processed.isPresent()) {
         log.warn(
             "Failed to process raw pipeline, falling back to cached={}\n  latestVersion={}",
@@ -266,12 +266,13 @@ public class PipelineCache implements MonitoredPoller {
     Objects.requireNonNull(pipelinePlanCache).put(plan.get("id").toString(), plan);
     return plan;
   }
+
   /**
    * If the pipeline is a v2 pipeline attempt to retrieve a cached plan otherwise plan that
    * pipeline. Returns an empty map if the plan fails, so that the pipeline is skipped.
    */
   private Map<String, Object> planPipelineIfNeeded(
-      Map<String, Object> pipeline, Predicate<Map<String, Object>> isV2Pipeline) {
+      Map<String, Object> pipeline, Predicate<Map<String, Object>> isV2Pipeline, boolean useCache) {
 
     // Get the updateTs from the raw pipeline definition as plans don't include this.
     long updateTs = Long.parseLong(pipeline.get("updateTs").toString());
@@ -283,7 +284,7 @@ public class PipelineCache implements MonitoredPoller {
           .orElseGet(
               () ->
                   pipelineOpt
-                      .map(this::retrievePlanFromCache)
+                      .map(p -> useCache ? retrievePlanFromCache(p) : null)
                       .orElseGet(
                           () ->
                               pipelineOpt
