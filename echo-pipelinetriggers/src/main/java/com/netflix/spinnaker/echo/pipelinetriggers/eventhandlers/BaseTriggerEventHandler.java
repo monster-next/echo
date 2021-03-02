@@ -69,7 +69,7 @@ public abstract class BaseTriggerEventHandler<T extends TriggerEvent>
     }
 
     Map<String, List<Trigger>> triggers = pipelineCache.getEnabledTriggersSync();
-    return supportedTriggerTypes().parallelStream()
+    return supportedTriggerTypes().stream()
         .flatMap(
             triggerType ->
                 Optional.ofNullable(triggers.get(triggerType))
@@ -83,6 +83,7 @@ public abstract class BaseTriggerEventHandler<T extends TriggerEvent>
         .map(Optional::get)
         .distinct()
         .map(pipelineCache::refresh)
+        .peek(p -> log.debug("Refreshed pipeline: {}", p.getId()))
         .collect(Collectors.toList());
   }
 

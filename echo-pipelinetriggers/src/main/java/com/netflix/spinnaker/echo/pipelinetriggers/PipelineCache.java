@@ -145,7 +145,7 @@ public class PipelineCache implements MonitoredPoller {
     try {
       log.debug("Getting pipelines from Front50...");
       long start = System.currentTimeMillis();
-      pipelines = fetchHydratedPipelines(true);
+      pipelines = fetchHydratedPipelines();
 
       // refresh the triggers view every time we fetch the latest pipelines
       triggersByType = extractEnabledTriggersFrom(pipelines);
@@ -191,10 +191,10 @@ public class PipelineCache implements MonitoredPoller {
     return (rawPipelines == null) ? Collections.emptyList() : rawPipelines;
   }
 
-  private List<Pipeline> fetchHydratedPipelines(boolean useCache) {
+  private List<Pipeline> fetchHydratedPipelines() {
     List<Map<String, Object>> rawPipelines = fetchRawPipelines();
     return rawPipelines.parallelStream()
-        .map(p -> process(p, useCache))
+        .map(p -> process(p, true))
         .filter(Optional::isPresent)
         .map(Optional::get)
         .collect(Collectors.toList());
