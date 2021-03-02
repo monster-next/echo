@@ -145,7 +145,7 @@ public class PipelineCache implements MonitoredPoller {
     try {
       log.debug("Getting pipelines from Front50...");
       long start = System.currentTimeMillis();
-      pipelines = fetchHydratedPipelines();
+      pipelines = fetchHydratedPipelines(true);
 
       // refresh the triggers view every time we fetch the latest pipelines
       triggersByType = extractEnabledTriggersFrom(pipelines);
@@ -191,10 +191,10 @@ public class PipelineCache implements MonitoredPoller {
     return (rawPipelines == null) ? Collections.emptyList() : rawPipelines;
   }
 
-  private List<Pipeline> fetchHydratedPipelines() {
+  private List<Pipeline> fetchHydratedPipelines(boolean useCache) {
     List<Map<String, Object>> rawPipelines = fetchRawPipelines();
     return rawPipelines.parallelStream()
-        .map(p -> process(p, true))
+        .map(p -> process(p, useCache))
         .filter(Optional::isPresent)
         .map(Optional::get)
         .collect(Collectors.toList());
@@ -202,6 +202,9 @@ public class PipelineCache implements MonitoredPoller {
 
   @Nonnull
   public Map<String, List<Trigger>> getEnabledTriggersSync() throws TimeoutException {
+    // refresh the pipelines
+    refreshPipelines();
+
     List<Pipeline> pipelines = getPipelinesSync();
 
     // When getPipelinesSync returns, this means that we have populated the pipeline cache.
@@ -217,6 +220,11 @@ public class PipelineCache implements MonitoredPoller {
         .filter(Trigger::isEnabled)
         .filter(t -> t.getType() != null)
         .collect(Collectors.groupingBy(Trigger::getType));
+  }
+
+  /** Refresh the pipeline definitions */
+  public void refreshPipelines() {
+    this.pipelines = fetchHydratedPipelines(false);
   }
 
   // looks up the latest version in front50 of a (potentially stale) pipeline config from the cache
