@@ -202,8 +202,6 @@ public class PipelineCache implements MonitoredPoller {
 
   @Nonnull
   public Map<String, List<Trigger>> getEnabledTriggersSync() throws TimeoutException {
-    // refresh the pipelines
-    refreshPipelines();
 
     List<Pipeline> pipelines = getPipelinesSync();
 
@@ -220,11 +218,6 @@ public class PipelineCache implements MonitoredPoller {
         .filter(Trigger::isEnabled)
         .filter(t -> t.getType() != null)
         .collect(Collectors.groupingBy(Trigger::getType));
-  }
-
-  /** Refresh the pipeline definitions */
-  public void refreshPipelines() {
-    this.pipelines = fetchHydratedPipelines(false);
   }
 
   // looks up the latest version in front50 of a (potentially stale) pipeline config from the cache
