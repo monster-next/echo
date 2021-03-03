@@ -82,7 +82,7 @@ public abstract class BaseTriggerEventHandler<T extends TriggerEvent>
         .filter(Optional::isPresent)
         .map(Optional::get)
         .distinct()
-        .peek(p -> log.debug("Refreshed pipeline: {}", p.getId()))
+        .map(p -> pipelineCache.refresh(p).withTrigger(p.getTrigger()))
         .collect(Collectors.toList());
   }
 
